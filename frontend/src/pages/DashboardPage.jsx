@@ -1,17 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../api";
 import { StatusBadge, TypeBadge } from "../components/StatusBadge";
+import { useAuth } from "../AuthContext";
 
-const KPI_META = [
+const BASE_KPI_META = [
   { key: "totalInStock", label: "Total In Stock", icon: "INV" },
   { key: "lowStockCount", label: "Low Stock Items", icon: "LOW" },
   { key: "outOfStockCount", label: "Out of Stock", icon: "OOS" },
   { key: "pendingReceipts", label: "Pending Receipts", icon: "RCV" },
   { key: "pendingDeliveries", label: "Pending Deliveries", icon: "DLV" },
-  { key: "scheduledTransfers", label: "Scheduled Transfers", icon: "TRF" },
+  { key: "outForDelivery", label: "Out For Delivery", icon: "OFD" },
+];
+
+const MANAGER_PROFIT_KPIS = [
+  { key: "todayProfit", label: "Today's Profit", icon: "TOD" },
+  { key: "monthProfit", label: "This Month Profit", icon: "MON" },
+  { key: "totalProfit", label: "Total Realized Profit", icon: "PFT" },
 ];
 
 export default function DashboardPage() {
+  const { isManager } = useAuth();
   const [dashboard, setDashboard] = useState(null);
   const [warehouses, setWarehouses] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -67,8 +75,14 @@ export default function DashboardPage() {
 
   const kpis = useMemo(() => {
     if (!dashboard) return [];
-    return KPI_META.map((m) => ({ ...m, value: dashboard.kpis[m.key] ?? 0 }));
-  }, [dashboard]);
+    const meta = isManager ? [...BASE_KPI_META, ...MANAGER_PROFIT_KPIS] : BASE_KPI_META;
+    return meta.map((m) => ({
+      ...m,
+      value: ["todayProfit", "monthProfit", "totalProfit"].includes(m.key)
+        ? Number(dashboard.kpis[m.key] ?? 0).toFixed(2)
+        : dashboard.kpis[m.key] ?? 0,
+    }));
+  }, [dashboard, isManager]);
 
   return (
     <>
@@ -104,7 +118,7 @@ export default function DashboardPage() {
         </select>
         <select className="filter-select" value={filters.status} onChange={(e) => updateFilter("status", e.target.value)}>
           <option value="">All Statuses</option>
-          {["Draft", "Waiting", "Ready", "Done", "Canceled"].map((s) => (
+          {["Draft", "Waiting", "Ready", "OutForDelivery", "Delivered", "Approved", "Done", "Canceled"].map((s) => (
             <option key={s}>{s}</option>
           ))}
         </select>

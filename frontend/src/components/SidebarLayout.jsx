@@ -7,7 +7,7 @@ function initials(name) {
 }
 
 export default function SidebarLayout() {
-  const { user, logout, isManager } = useAuth();
+  const { user, logout, isManager, isStaff } = useAuth();
   const navigate = useNavigate();
 
   const onLogout = () => {
@@ -54,6 +54,16 @@ export default function SidebarLayout() {
 
           <div className="nav-section">
             <span className="nav-label">Operations</span>
+            {isStaff && (
+              <>
+                <NavLink to="/operations?type=Receipt" className={({ isActive }) => `nav-item nav-sub ${isActive ? "active" : ""}`}>
+                  Pending Receipts
+                </NavLink>
+                <NavLink to="/operations?type=Delivery" className={({ isActive }) => `nav-item nav-sub ${isActive ? "active" : ""}`}>
+                  Pending Deliveries
+                </NavLink>
+              </>
+            )}
             <NavLink to="/operations?type=Receipt" className={({ isActive }) => `nav-item nav-sub ${isActive ? "active" : ""}`}>
               Receipts
             </NavLink>

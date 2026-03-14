@@ -42,9 +42,14 @@ CREATE TABLE IF NOT EXISTS products (
   sku VARCHAR(80) NOT NULL UNIQUE,
   category_id BIGINT REFERENCES categories(id),
   unit_of_measure VARCHAR(40) NOT NULL,
+  cost_price NUMERIC(18, 4) NOT NULL DEFAULT 0,
+  selling_price NUMERIC(18, 4) NOT NULL DEFAULT 0,
   reorder_level NUMERIC(18, 4) NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE products ADD COLUMN IF NOT EXISTS cost_price NUMERIC(18, 4) NOT NULL DEFAULT 0;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS selling_price NUMERIC(18, 4) NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS stock_balances (
   id BIGSERIAL PRIMARY KEY,
@@ -63,17 +68,27 @@ CREATE TABLE IF NOT EXISTS operations (
   source_location_id BIGINT REFERENCES locations(id),
   destination_location_id BIGINT REFERENCES locations(id),
   notes TEXT,
+  stock_applied BOOLEAN NOT NULL DEFAULT FALSE,
+  approved_at TIMESTAMP,
   created_by BIGINT REFERENCES users(id),
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE operations ADD COLUMN IF NOT EXISTS stock_applied BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE operations ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP;
+
 CREATE TABLE IF NOT EXISTS operation_items (
   id BIGSERIAL PRIMARY KEY,
   operation_id BIGINT NOT NULL REFERENCES operations(id),
   product_id BIGINT NOT NULL REFERENCES products(id),
-  quantity NUMERIC(18, 4) NOT NULL
+  quantity NUMERIC(18, 4) NOT NULL,
+  cost_price NUMERIC(18, 4) NOT NULL DEFAULT 0,
+  selling_price NUMERIC(18, 4) NOT NULL DEFAULT 0
 );
+
+ALTER TABLE operation_items ADD COLUMN IF NOT EXISTS cost_price NUMERIC(18, 4) NOT NULL DEFAULT 0;
+ALTER TABLE operation_items ADD COLUMN IF NOT EXISTS selling_price NUMERIC(18, 4) NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS stock_ledger (
   id BIGSERIAL PRIMARY KEY,

@@ -2,6 +2,9 @@ const STATUS_MAP = {
   Draft:    "badge badge-Draft",
   Waiting:  "badge badge-Waiting",
   Ready:    "badge badge-Ready",
+  OutForDelivery: "badge badge-OutForDelivery",
+  Delivered: "badge badge-Delivered",
+  Approved: "badge badge-Approved",
   Done:     "badge badge-Done",
   Canceled: "badge badge-Canceled",
 };

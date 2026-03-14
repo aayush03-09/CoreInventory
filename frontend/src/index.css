@@ -212,6 +212,9 @@ button { cursor: pointer; font: inherit; }
 .badge-Draft    { background: var(--c-draft-bg);    color: var(--c-draft-tx);    }
 .badge-Waiting  { background: var(--c-waiting-bg);  color: var(--c-waiting-tx);  }
 .badge-Ready    { background: var(--c-ready-bg);    color: var(--c-ready-tx);    }
+.badge-OutForDelivery { background: #ede9fe; color: #5b21b6; }
+.badge-Delivered { background: #e0f2fe; color: #0c4a6e; }
+.badge-Approved { background: #dcfce7; color: #166534; }
 .badge-Done     { background: var(--c-done-bg);     color: var(--c-done-tx);     }
 .badge-Canceled { background: var(--c-canceled-bg); color: var(--c-canceled-tx); }
 .badge-Receipt    { background: #e0f2fe; color: #0369a1; }

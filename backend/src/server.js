@@ -16,6 +16,7 @@ const MAX_BODY_SIZE = "200kb";
 const AUTH_WINDOW_MS = 10 * 60 * 1000;
 const AUTH_MAX_ATTEMPTS = 30;
 const ROLES = ["manager", "staff"];
+const OP_STATUSES = ["Draft", "Waiting", "Ready", "OutForDelivery", "Delivered", "Approved", "Done", "Canceled"];
 const authAttempts = new Map();
 const sseClients = new Set();
 
@@ -117,6 +118,77 @@ const requireRole = (...allowedRoles) => (req, res, next) => {
     return res.status(403).json({ message: "Forbidden: insufficient permissions" });
   }
   return next();
+};
+
+const isFinalStatus = (status) => ["Approved", "Done", "Canceled"].includes(status);
+
+const applyStockForOperation = async (operation, items, client) => {
+  if (operation.stock_applied) {
+    return;
+  }
+
+  if (operation.type === "Receipt") {
+    if (!operation.destination_location_id) {
+      throw new Error("Receipt requires destination location");
+    }
+
+    for (const item of items) {
+      const stock = await getOrCreateStock(item.product_id, operation.destination_location_id, client);
+      await db.query("UPDATE stock_balances SET qty = qty + $1 WHERE id = $2", [item.quantity, stock.id], client);
+      await writeLedger(item.product_id, operation.destination_location_id, item.quantity, "Receipt approved", "Receipt", operation.id, client);
+    }
+    return;
+  }
+
+  if (operation.type === "Delivery") {
+    if (!operation.source_location_id) {
+      throw new Error("Delivery requires source location");
+    }
+
+    for (const item of items) {
+      const stock = await getOrCreateStock(item.product_id, operation.source_location_id, client);
+      if (stock.qty < item.quantity) {
+        throw new Error(`Insufficient stock for product ${item.product_id}`);
+      }
+
+      await db.query("UPDATE stock_balances SET qty = qty - $1 WHERE id = $2", [item.quantity, stock.id], client);
+      await writeLedger(item.product_id, operation.source_location_id, -item.quantity, "Delivery dispatched", "Delivery", operation.id, client);
+    }
+    return;
+  }
+
+  if (operation.type === "Internal") {
+    if (!operation.source_location_id || !operation.destination_location_id) {
+      throw new Error("Internal transfer requires source and destination");
+    }
+
+    for (const item of items) {
+      const source = await getOrCreateStock(item.product_id, operation.source_location_id, client);
+      const destination = await getOrCreateStock(item.product_id, operation.destination_location_id, client);
+      if (source.qty < item.quantity) {
+        throw new Error(`Insufficient stock for product ${item.product_id}`);
+      }
+
+      await db.query("UPDATE stock_balances SET qty = qty - $1 WHERE id = $2", [item.quantity, source.id], client);
+      await db.query("UPDATE stock_balances SET qty = qty + $1 WHERE id = $2", [item.quantity, destination.id], client);
+      await writeLedger(item.product_id, operation.source_location_id, -item.quantity, "Internal transfer out", "Internal", operation.id, client);
+      await writeLedger(item.product_id, operation.destination_location_id, item.quantity, "Internal transfer in", "Internal", operation.id, client);
+    }
+    return;
+  }
+
+  if (operation.type === "Adjustment") {
+    if (!operation.source_location_id) {
+      throw new Error("Adjustment requires location in source location field");
+    }
+
+    for (const item of items) {
+      const stock = await getOrCreateStock(item.product_id, operation.source_location_id, client);
+      const delta = item.quantity - stock.qty;
+      await db.query("UPDATE stock_balances SET qty = $1 WHERE id = $2", [item.quantity, stock.id], client);
+      await writeLedger(item.product_id, operation.source_location_id, delta, "Stock adjustment", "Adjustment", operation.id, client);
+    }
+  }
 };
 
 const getOrCreateStock = async (productId, locationId, client) => {
@@ -402,7 +474,7 @@ app.get("/api/products", authMiddleware, asyncHandler(async (req, res) => {
   const locationId = req.query.locationId;
 
   let sql = `
-    SELECT p.id, p.name, p.sku, p.unit_of_measure, p.reorder_level, p.created_at,
+    SELECT p.id, p.name, p.sku, p.unit_of_measure, p.cost_price, p.selling_price, p.reorder_level, p.created_at,
            c.name AS category_name,
            COALESCE(SUM(sb.qty), 0) AS total_stock
     FROM products p
@@ -438,6 +510,8 @@ app.post("/api/products", authMiddleware, requireRole("manager"), asyncHandler(a
     sku: z.string().trim().min(2).max(80),
     categoryId: z.coerce.number().int().nullable().optional(),
     unitOfMeasure: z.string().trim().min(1).max(40),
+    costPrice: z.coerce.number().min(0),
+    sellingPrice: z.coerce.number().min(0),
     reorderLevel: z.coerce.number().min(0).optional(),
     initialStock: z.coerce.number().min(0).optional(),
     locationId: z.coerce.number().int().positive().optional(),
@@ -462,10 +536,10 @@ app.post("/api/products", authMiddleware, requireRole("manager"), asyncHandler(a
   try {
     const createdId = await db.withTransaction(async (client) => {
       const product = await db.getOne(
-        `INSERT INTO products(name, sku, category_id, unit_of_measure, reorder_level)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO products(name, sku, category_id, unit_of_measure, cost_price, selling_price, reorder_level)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id`,
-        [data.name, data.sku, data.categoryId || null, data.unitOfMeasure, data.reorderLevel || 0],
+        [data.name, data.sku, data.categoryId || null, data.unitOfMeasure, data.costPrice, data.sellingPrice, data.reorderLevel || 0],
         client
       );
 
@@ -495,6 +569,8 @@ app.put("/api/products/:id", authMiddleware, requireRole("manager"), asyncHandle
     sku: z.string().trim().min(2).max(80),
     categoryId: z.coerce.number().int().nullable().optional(),
     unitOfMeasure: z.string().trim().min(1).max(40),
+    costPrice: z.coerce.number().min(0),
+    sellingPrice: z.coerce.number().min(0),
     reorderLevel: z.coerce.number().min(0),
   });
 
@@ -513,10 +589,10 @@ app.put("/api/products/:id", authMiddleware, requireRole("manager"), asyncHandle
   try {
     const row = await db.getOne(
       `UPDATE products
-       SET name = $1, sku = $2, category_id = $3, unit_of_measure = $4, reorder_level = $5
-       WHERE id = $6
+       SET name = $1, sku = $2, category_id = $3, unit_of_measure = $4, cost_price = $5, selling_price = $6, reorder_level = $7
+       WHERE id = $8
        RETURNING *`,
-      [data.name, data.sku, data.categoryId || null, data.unitOfMeasure, data.reorderLevel, req.params.id]
+      [data.name, data.sku, data.categoryId || null, data.unitOfMeasure, data.costPrice, data.sellingPrice, data.reorderLevel, req.params.id]
     );
 
     if (!row) {
@@ -579,16 +655,21 @@ app.get("/api/operations", authMiddleware, asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
-app.post("/api/operations", authMiddleware, asyncHandler(async (req, res) => {
+app.post("/api/operations", authMiddleware, requireRole("manager"), asyncHandler(async (req, res) => {
   const schema = z.object({
     type: z.enum(["Receipt", "Delivery", "Internal", "Adjustment"]),
-    status: z.enum(["Draft", "Waiting", "Ready", "Done", "Canceled"]).optional(),
+    status: z.enum(OP_STATUSES).optional(),
     supplier: z.string().trim().max(120).optional(),
     customer: z.string().trim().max(120).optional(),
     sourceLocationId: z.coerce.number().int().positive().optional(),
     destinationLocationId: z.coerce.number().int().positive().optional(),
     notes: z.string().trim().max(600).optional(),
-    items: z.array(z.object({ productId: z.coerce.number().int(), quantity: z.coerce.number().positive() })).min(1),
+    items: z.array(z.object({
+      productId: z.coerce.number().int(),
+      quantity: z.coerce.number().positive(),
+      costPrice: z.coerce.number().min(0).optional(),
+      sellingPrice: z.coerce.number().min(0).optional(),
+    })).min(1),
   });
 
   const parsed = withSchema(schema, req.body);
@@ -615,10 +696,14 @@ app.post("/api/operations", authMiddleware, asyncHandler(async (req, res) => {
   }
 
   const productIds = [...new Set(data.items.map((item) => item.productId))];
-  const existingProducts = await db.getMany("SELECT id FROM products WHERE id = ANY($1::bigint[])", [productIds]);
+  const existingProducts = await db.getMany(
+    "SELECT id, cost_price, selling_price FROM products WHERE id = ANY($1::bigint[])",
+    [productIds]
+  );
   if (existingProducts.length !== productIds.length) {
     return res.status(400).json({ message: "One or more products are invalid" });
   }
+  const priceByProductId = new Map(existingProducts.map((p) => [p.id, p]));
 
   const id = await db.withTransaction(async (client) => {
     const operation = await db.getOne(
@@ -639,9 +724,16 @@ app.post("/api/operations", authMiddleware, asyncHandler(async (req, res) => {
     );
 
     for (const item of data.items) {
+      const productPricing = priceByProductId.get(item.productId);
       await db.query(
-        "INSERT INTO operation_items(operation_id, product_id, quantity) VALUES ($1, $2, $3)",
-        [operation.id, item.productId, item.quantity],
+        "INSERT INTO operation_items(operation_id, product_id, quantity, cost_price, selling_price) VALUES ($1, $2, $3, $4, $5)",
+        [
+          operation.id,
+          item.productId,
+          item.quantity,
+          item.costPrice ?? productPricing.cost_price,
+          item.sellingPrice ?? productPricing.selling_price,
+        ],
         client
       );
     }
@@ -659,8 +751,8 @@ app.post("/api/operations/:id/validate", authMiddleware, requireRole("manager"),
   if (!operation) {
     return res.status(404).json({ message: "Operation not found" });
   }
-  if (operation.status === "Done") {
-    return res.status(400).json({ message: "Already validated" });
+  if (isFinalStatus(operation.status)) {
+    return res.status(400).json({ message: "Operation already finalized" });
   }
 
   const items = await db.getMany("SELECT * FROM operation_items WHERE operation_id = $1", [operation.id]);
@@ -669,72 +761,34 @@ app.post("/api/operations/:id/validate", authMiddleware, requireRole("manager"),
   }
 
   try {
+    let nextStatus = "Ready";
     await db.withTransaction(async (client) => {
-      if (operation.type === "Receipt") {
-        if (!operation.destination_location_id) {
-          throw new Error("Receipt requires destination location");
-        }
-
-        for (const item of items) {
-          const stock = await getOrCreateStock(item.product_id, operation.destination_location_id, client);
-          await db.query("UPDATE stock_balances SET qty = qty + $1 WHERE id = $2", [item.quantity, stock.id], client);
-          await writeLedger(item.product_id, operation.destination_location_id, item.quantity, "Receipt validated", "Receipt", operation.id, client);
-        }
-      }
-
       if (operation.type === "Delivery") {
-        if (!operation.source_location_id) {
-          throw new Error("Delivery requires source location");
-        }
-
-        for (const item of items) {
-          const stock = await getOrCreateStock(item.product_id, operation.source_location_id, client);
-          if (stock.qty < item.quantity) {
-            throw new Error(`Insufficient stock for product ${item.product_id}`);
-          }
-
-          await db.query("UPDATE stock_balances SET qty = qty - $1 WHERE id = $2", [item.quantity, stock.id], client);
-          await writeLedger(item.product_id, operation.source_location_id, -item.quantity, "Delivery validated", "Delivery", operation.id, client);
-        }
+        await applyStockForOperation(operation, items, client);
       }
 
-      if (operation.type === "Internal") {
-        if (!operation.source_location_id || !operation.destination_location_id) {
-          throw new Error("Internal transfer requires source and destination");
-        }
-
-        for (const item of items) {
-          const source = await getOrCreateStock(item.product_id, operation.source_location_id, client);
-          const destination = await getOrCreateStock(item.product_id, operation.destination_location_id, client);
-          if (source.qty < item.quantity) {
-            throw new Error(`Insufficient stock for product ${item.product_id}`);
-          }
-
-          await db.query("UPDATE stock_balances SET qty = qty - $1 WHERE id = $2", [item.quantity, source.id], client);
-          await db.query("UPDATE stock_balances SET qty = qty + $1 WHERE id = $2", [item.quantity, destination.id], client);
-          await writeLedger(item.product_id, operation.source_location_id, -item.quantity, "Internal transfer out", "Internal", operation.id, client);
-          await writeLedger(item.product_id, operation.destination_location_id, item.quantity, "Internal transfer in", "Internal", operation.id, client);
-        }
+      if (operation.type === "Internal" || operation.type === "Adjustment") {
+        await applyStockForOperation(operation, items, client);
+        nextStatus = "Approved";
       }
 
-      if (operation.type === "Adjustment") {
-        if (!operation.source_location_id) {
-          throw new Error("Adjustment requires location in source location field");
-        }
-
-        for (const item of items) {
-          const stock = await getOrCreateStock(item.product_id, operation.source_location_id, client);
-          const delta = item.quantity - stock.qty;
-          await db.query("UPDATE stock_balances SET qty = $1 WHERE id = $2", [item.quantity, stock.id], client);
-          await writeLedger(item.product_id, operation.source_location_id, delta, "Stock adjustment", "Adjustment", operation.id, client);
-        }
-      }
-
-      await db.query("UPDATE operations SET status = 'Done', updated_at = NOW() WHERE id = $1", [operation.id], client);
+      const isApproved = nextStatus === "Approved";
+      await db.query(
+        `UPDATE operations
+         SET status = $1,
+             stock_applied = CASE WHEN stock_applied THEN stock_applied ELSE $2 END,
+             approved_at = CASE WHEN $3 THEN NOW() ELSE approved_at END,
+             updated_at = NOW()
+         WHERE id = $4`,
+        [nextStatus, ["Delivery", "Internal", "Adjustment"].includes(operation.type), isApproved, operation.id],
+        client
+      );
     });
 
-    broadcast("operation.changed", { action: "validated", id: operation.id, type: operation.type, status: "Done" });
-    broadcast("stock.changed", { operationId: operation.id, operationType: operation.type });
+    broadcast("operation.changed", { action: "validated", id: operation.id, type: operation.type, status: nextStatus });
+    if (["Delivery", "Internal", "Adjustment"].includes(operation.type)) {
+      broadcast("stock.changed", { operationId: operation.id, operationType: operation.type });
+    }
     return res.json({ message: "Operation validated" });
   } catch (error) {
     return res.status(400).json({ message: error.message || "Validation failed" });
@@ -742,23 +796,133 @@ app.post("/api/operations/:id/validate", authMiddleware, requireRole("manager"),
 }));
 
 app.patch("/api/operations/:id/status", authMiddleware, requireRole("manager"), asyncHandler(async (req, res) => {
-  const schema = z.object({ status: z.enum(["Draft", "Waiting", "Ready", "Done", "Canceled"]) });
+  const schema = z.object({ status: z.enum(OP_STATUSES) });
   const parsed = withSchema(schema, req.body);
   if (!parsed.ok) {
     return res.status(400).json(parsed.error);
   }
 
-  const operation = await db.getOne(
-    "UPDATE operations SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *",
-    [parsed.data.status, req.params.id]
-  );
+  const currentOperation = await db.getOne("SELECT * FROM operations WHERE id = $1", [req.params.id]);
+  if (!currentOperation) {
+    return res.status(404).json({ message: "Operation not found" });
+  }
+
+  const nextStatus = parsed.data.status;
+  if (nextStatus === "Approved" && !currentOperation.stock_applied) {
+    const items = await db.getMany("SELECT * FROM operation_items WHERE operation_id = $1", [currentOperation.id]);
+    await db.withTransaction(async (client) => {
+      await applyStockForOperation(currentOperation, items, client);
+      await db.query(
+        `UPDATE operations
+         SET status = 'Approved', stock_applied = TRUE, approved_at = NOW(), updated_at = NOW()
+         WHERE id = $1`,
+        [currentOperation.id],
+        client
+      );
+    });
+  } else {
+    await db.query(
+      `UPDATE operations
+       SET status = $1::varchar,
+         approved_at = CASE WHEN $1::varchar = 'Approved' THEN NOW() ELSE approved_at END,
+           updated_at = NOW()
+       WHERE id = $2`,
+      [nextStatus, req.params.id]
+    );
+  }
+
+  const operation = await db.getOne("SELECT * FROM operations WHERE id = $1", [req.params.id]);
 
   if (!operation) {
     return res.status(404).json({ message: "Operation not found" });
   }
 
   res.json(operation);
-  broadcast("operation.changed", { action: "status-updated", id: Number(req.params.id), status: parsed.data.status, type: operation.type });
+  if (nextStatus === "Approved") {
+    broadcast("stock.changed", { operationId: operation.id, operationType: operation.type });
+  }
+  broadcast("operation.changed", { action: "status-updated", id: Number(req.params.id), status: operation.status, type: operation.type });
+}));
+
+app.get("/api/operations/staff-queue", authMiddleware, requireRole("staff"), asyncHandler(async (_req, res) => {
+  const rows = await db.getMany(
+    `SELECT o.*, sl.name AS source_location_name, dl.name AS destination_location_name
+     FROM operations o
+     LEFT JOIN locations sl ON sl.id = o.source_location_id
+     LEFT JOIN locations dl ON dl.id = o.destination_location_id
+     WHERE o.type IN ('Receipt', 'Delivery')
+       AND o.status NOT IN ('Approved', 'Done', 'Canceled')
+     ORDER BY o.created_at DESC`
+  );
+  return res.json({
+    pendingReceipts: rows.filter((r) => r.type === "Receipt"),
+    pendingDeliveries: rows.filter((r) => r.type === "Delivery"),
+  });
+}));
+
+app.patch("/api/operations/:id/staff-status", authMiddleware, requireRole("staff"), asyncHandler(async (req, res) => {
+  const schema = z.object({ status: z.enum(["OutForDelivery", "Delivered", "Approved"]) });
+  const parsed = withSchema(schema, req.body);
+  if (!parsed.ok) {
+    return res.status(400).json(parsed.error);
+  }
+
+  const operation = await db.getOne("SELECT * FROM operations WHERE id = $1", [req.params.id]);
+  if (!operation) {
+    return res.status(404).json({ message: "Operation not found" });
+  }
+  if (!["Receipt", "Delivery"].includes(operation.type)) {
+    return res.status(400).json({ message: "Staff can only update receipt or delivery operations" });
+  }
+
+  const nextStatus = parsed.data.status;
+  const deliveryTransitions = {
+    Waiting: ["OutForDelivery"],
+    Ready: ["OutForDelivery"],
+    OutForDelivery: ["Delivered"],
+    Delivered: ["Approved"],
+  };
+  const receiptTransitions = {
+    Waiting: ["Approved"],
+    Ready: ["Approved"],
+  };
+  const allowed = operation.type === "Delivery"
+    ? (deliveryTransitions[operation.status] || [])
+    : (receiptTransitions[operation.status] || []);
+
+  if (!allowed.includes(nextStatus)) {
+    return res.status(400).json({ message: `Invalid transition from ${operation.status} to ${nextStatus}` });
+  }
+
+  const items = await db.getMany("SELECT * FROM operation_items WHERE operation_id = $1", [operation.id]);
+  await db.withTransaction(async (client) => {
+    if (operation.type === "Receipt" && nextStatus === "Approved") {
+      await applyStockForOperation(operation, items, client);
+      await db.query(
+        "UPDATE operations SET status = 'Approved', stock_applied = TRUE, approved_at = NOW(), updated_at = NOW() WHERE id = $1",
+        [operation.id],
+        client
+      );
+      return;
+    }
+
+    await db.query(
+      `UPDATE operations
+       SET status = $1::varchar,
+         approved_at = CASE WHEN $1::varchar = 'Approved' THEN NOW() ELSE approved_at END,
+           updated_at = NOW()
+       WHERE id = $2`,
+      [nextStatus, operation.id],
+      client
+    );
+  });
+
+  if (operation.type === "Receipt" && nextStatus === "Approved") {
+    broadcast("stock.changed", { operationId: operation.id, operationType: operation.type });
+  }
+  broadcast("operation.changed", { action: "staff-status-updated", id: operation.id, status: nextStatus, type: operation.type });
+  const updated = await db.getOne("SELECT * FROM operations WHERE id = $1", [operation.id]);
+  return res.json(updated);
 }));
 
 app.get("/api/ledger", authMiddleware, asyncHandler(async (req, res) => {
@@ -824,14 +988,29 @@ app.get("/api/dashboard", authMiddleware, asyncHandler(async (req, res) => {
   );
 
   const pendingReceiptsRow = await db.getOne(
-    "SELECT COUNT(*) AS count FROM operations WHERE type = 'Receipt' AND status != 'Done'"
+    "SELECT COUNT(*) AS count FROM operations WHERE type = 'Receipt' AND status NOT IN ('Approved', 'Done', 'Canceled')"
   );
   const pendingDeliveriesRow = await db.getOne(
-    "SELECT COUNT(*) AS count FROM operations WHERE type = 'Delivery' AND status != 'Done'"
+    "SELECT COUNT(*) AS count FROM operations WHERE type = 'Delivery' AND status NOT IN ('Approved', 'Done', 'Canceled')"
   );
   const scheduledTransfersRow = await db.getOne(
     "SELECT COUNT(*) AS count FROM operations WHERE type = 'Internal' AND status IN ('Draft', 'Waiting', 'Ready')"
   );
+  const outForDeliveryRow = await db.getOne(
+    "SELECT COUNT(*) AS count FROM operations WHERE type = 'Delivery' AND status = 'OutForDelivery'"
+  );
+
+  const profitRows = req.user.role === "manager"
+    ? await db.getOne(
+        `SELECT
+           COALESCE(SUM((oi.selling_price - oi.cost_price) * oi.quantity), 0) AS total_profit,
+           COALESCE(SUM(CASE WHEN DATE(COALESCE(o.approved_at, o.updated_at)) = CURRENT_DATE THEN (oi.selling_price - oi.cost_price) * oi.quantity ELSE 0 END), 0) AS today_profit,
+           COALESCE(SUM(CASE WHEN DATE_TRUNC('month', COALESCE(o.approved_at, o.updated_at)) = DATE_TRUNC('month', CURRENT_DATE) THEN (oi.selling_price - oi.cost_price) * oi.quantity ELSE 0 END), 0) AS month_profit
+         FROM operations o
+         JOIN operation_items oi ON oi.operation_id = o.id
+         WHERE o.type = 'Delivery' AND o.status IN ('Approved', 'Done')`
+      )
+    : { total_profit: 0, today_profit: 0, month_profit: 0 };
 
   let operationsSql = `
     SELECT o.*, sl.name AS source_location_name, dl.name AS destination_location_name
@@ -874,7 +1053,11 @@ app.get("/api/dashboard", authMiddleware, asyncHandler(async (req, res) => {
       outOfStockCount: outOfStockRow?.count || 0,
       pendingReceipts: pendingReceiptsRow?.count || 0,
       pendingDeliveries: pendingDeliveriesRow?.count || 0,
+      outForDelivery: outForDeliveryRow?.count || 0,
       scheduledTransfers: scheduledTransfersRow?.count || 0,
+      totalProfit: req.user.role === "manager" ? (profitRows?.total_profit || 0) : null,
+      todayProfit: req.user.role === "manager" ? (profitRows?.today_profit || 0) : null,
+      monthProfit: req.user.role === "manager" ? (profitRows?.month_profit || 0) : null,
     },
     operations,
   });

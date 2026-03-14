@@ -6,11 +6,11 @@ import { StatusBadge, TypeBadge } from "../components/StatusBadge";
 import { useAuth } from "../AuthContext";
 
 const TYPES = ["Receipt", "Delivery", "Internal", "Adjustment"];
-const STATUSES = ["Draft", "Waiting", "Ready", "Done", "Canceled"];
+const STATUSES = ["Draft", "Waiting", "Ready", "OutForDelivery", "Delivered", "Approved", "Done", "Canceled"];
 
 const emptyForm = {
   type: "Receipt",
-  status: "Draft",
+  status: "Waiting",
   supplier: "",
   customer: "",
   sourceLocationId: "",
@@ -30,7 +30,7 @@ function typeLabel(t) {
 }
 
 export default function OperationsPage() {
-  const { isManager } = useAuth();
+  const { isManager, isStaff } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeType = searchParams.get("type") || "";
   const activeStatus = searchParams.get("status") || "";
@@ -38,6 +38,7 @@ export default function OperationsPage() {
   const [operations, setOperations] = useState([]);
   const [products, setProducts] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [staffQueue, setStaffQueue] = useState({ pendingReceipts: [], pendingDeliveries: [] });
   const [form, setForm] = useState({ ...emptyForm, type: activeType || "Receipt" });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [error, setError] = useState("");
@@ -57,6 +58,11 @@ export default function OperationsPage() {
     setOperations(ops);
     setProducts(p);
     setLocations(l);
+
+    if (isStaff) {
+      const { data } = await api.get("/operations/staff-queue");
+      setStaffQueue(data);
+    }
   };
 
   useEffect(() => {
@@ -92,7 +98,7 @@ export default function OperationsPage() {
   };
 
   const openDrawer = () => {
-    setForm({ ...emptyForm, type: activeType || "Receipt" });
+    setForm({ ...emptyForm, type: activeType || "Receipt", status: "Waiting" });
     setError("");
     setDrawerOpen(true);
   };
@@ -131,6 +137,29 @@ export default function OperationsPage() {
     await load();
   };
 
+  const getStaffNextStatus = (op) => {
+    if (op.type === "Receipt" && ["Waiting", "Ready"].includes(op.status)) {
+      return "Approved";
+    }
+    if (op.type === "Delivery" && ["Waiting", "Ready"].includes(op.status)) {
+      return "OutForDelivery";
+    }
+    if (op.type === "Delivery" && op.status === "OutForDelivery") {
+      return "Delivered";
+    }
+    if (op.type === "Delivery" && op.status === "Delivered") {
+      return "Approved";
+    }
+    return null;
+  };
+
+  const staffProgress = async (op) => {
+    const next = getStaffNextStatus(op);
+    if (!next) return;
+    await api.patch(`/operations/${op.id}/staff-status`, { status: next });
+    await load();
+  };
+
   const pageTitle = activeType ? `${typeLabel(activeType)}s` : "All Operations";
 
   return (
@@ -141,11 +170,28 @@ export default function OperationsPage() {
           <p className="page-subtitle">Manage incoming, outgoing, transfers and adjustments.</p>
         </div>
         <div className="page-actions">
-          <button className="btn btn-primary" onClick={openDrawer}>
-            + New {activeType || "Operation"}
-          </button>
+          {isManager && (
+            <button className="btn btn-primary" onClick={openDrawer}>
+              + New {activeType || "Operation"}
+            </button>
+          )}
         </div>
       </div>
+
+      {isStaff && (
+        <div className="kpi-grid">
+          <div className="kpi-card">
+            <div className="kpi-icon kpi-text-icon">RCV</div>
+            <div className="kpi-value">{staffQueue.pendingReceipts.length}</div>
+            <div className="kpi-label">Pending Receipts</div>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-icon kpi-text-icon">DLV</div>
+            <div className="kpi-value">{staffQueue.pendingDeliveries.length}</div>
+            <div className="kpi-label">Pending Deliveries</div>
+          </div>
+        </div>
+      )}
 
       <div className="filter-bar">
         <div className="tab-group">
@@ -209,22 +255,27 @@ export default function OperationsPage() {
                     </td>
                     <td>
                       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        {isManager && op.status !== "Done" && op.status !== "Canceled" && (
+                        {isManager && !["Approved", "Done", "Canceled"].includes(op.status) && (
                           <button className="btn btn-sm btn-primary" onClick={() => validate(op.id)}>
                             Validate
                           </button>
                         )}
-                        {isManager && op.status !== "Done" && op.status !== "Canceled" && (
+                        {isManager && !["Approved", "Done", "Canceled"].includes(op.status) && (
                           <select
                             className="filter-select btn-sm"
                             style={{ minWidth: 100, padding: "4px 8px" }}
                             value={op.status}
                             onChange={(e) => changeStatus(op.id, e.target.value)}
                           >
-                            {["Draft", "Waiting", "Ready", "Canceled", "Done"].map((s) => (
+                            {["Draft", "Waiting", "Ready", "OutForDelivery", "Delivered", "Approved", "Canceled", "Done"].map((s) => (
                               <option key={s}>{s}</option>
                             ))}
                           </select>
+                        )}
+                        {isStaff && getStaffNextStatus(op) && (
+                          <button className="btn btn-sm btn-primary" onClick={() => staffProgress(op)}>
+                            Mark {getStaffNextStatus(op)}
+                          </button>
                         )}
                       </div>
                     </td>
@@ -245,7 +296,7 @@ export default function OperationsPage() {
         </div>
       </div>
 
-      <Drawer
+      {isManager && <Drawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         title={`New ${form.type}`}
@@ -372,7 +423,7 @@ export default function OperationsPage() {
             + Add Row
           </button>
         </form>
-      </Drawer>
+      </Drawer>}
     </>
   );
 }

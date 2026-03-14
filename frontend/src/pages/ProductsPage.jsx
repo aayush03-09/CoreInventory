@@ -8,6 +8,8 @@ const initialForm = {
   sku: "",
   categoryId: "",
   unitOfMeasure: "pcs",
+  costPrice: 0,
+  sellingPrice: 0,
   reorderLevel: 0,
   initialStock: 0,
   locationId: "",
@@ -60,6 +62,8 @@ export default function ProductsPage() {
         ...form,
         categoryId: form.categoryId ? Number(form.categoryId) : null,
         locationId: form.locationId ? Number(form.locationId) : undefined,
+        costPrice: Number(form.costPrice),
+        sellingPrice: Number(form.sellingPrice),
         reorderLevel: Number(form.reorderLevel),
         initialStock: Number(form.initialStock),
       });
@@ -114,6 +118,8 @@ export default function ProductsPage() {
                 <th>SKU</th>
                 <th>Category</th>
                 <th>UOM</th>
+                <th>Cost Price</th>
+                <th>Selling Price</th>
                 <th>Total Stock</th>
                 <th>Reorder At</th>
                 <th>Stock Status</th>
@@ -127,6 +133,8 @@ export default function ProductsPage() {
                     <td className="text-muted text-sm">{p.sku}</td>
                     <td>{p.category_name || <span className="text-subtle">-</span>}</td>
                     <td>{p.unit_of_measure}</td>
+                    <td>{Number(p.cost_price || 0).toFixed(2)}</td>
+                    <td>{Number(p.selling_price || 0).toFixed(2)}</td>
                     <td>{p.total_stock}</td>
                     <td>{p.reorder_level}</td>
                     <td>{stockBadge(p.total_stock, p.reorder_level)}</td>
@@ -134,7 +142,7 @@ export default function ProductsPage() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={7}>
+                  <td colSpan={9}>
                     <div className="empty-state">
                       <div className="empty-icon">INV</div>
                       No products found
@@ -197,6 +205,17 @@ export default function ProductsPage() {
                 Unit of Measure <span className="req">*</span>
               </label>
               <input value={form.unitOfMeasure} onChange={(e) => setForm({ ...form, unitOfMeasure: e.target.value })} required />
+            </div>
+          </div>
+
+          <div className="form-grid-2">
+            <div className="form-field">
+              <label className="form-label">Cost Price</label>
+              <input type="number" min="0" step="0.01" value={form.costPrice} onChange={(e) => setForm({ ...form, costPrice: e.target.value })} required />
+            </div>
+            <div className="form-field">
+              <label className="form-label">Selling Price</label>
+              <input type="number" min="0" step="0.01" value={form.sellingPrice} onChange={(e) => setForm({ ...form, sellingPrice: e.target.value })} required />
             </div>
           </div>
 
