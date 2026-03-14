@@ -7,7 +7,7 @@ function initials(name) {
 }
 
 export default function SidebarLayout() {
-  const { user, logout } = useAuth();
+  const { user, logout, isManager } = useAuth();
   const navigate = useNavigate();
 
   const onLogout = () => {
@@ -71,12 +71,14 @@ export default function SidebarLayout() {
             </NavLink>
           </div>
 
-          <div className="nav-section">
-            <span className="nav-label">Settings</span>
-            <NavLink to="/warehouses" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
-              <span className="nav-icon">WH</span> Warehouse
-            </NavLink>
-          </div>
+          {isManager && (
+            <div className="nav-section">
+              <span className="nav-label">Settings</span>
+              <NavLink to="/warehouses" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
+                <span className="nav-icon">WH</span> Warehouse
+              </NavLink>
+            </div>
+          )}
         </nav>
 
         <div className="sidebar-footer">

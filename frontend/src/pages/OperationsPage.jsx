@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import api from "../api";
 import Drawer from "../components/Drawer";
 import { StatusBadge, TypeBadge } from "../components/StatusBadge";
+import { useAuth } from "../AuthContext";
 
 const TYPES = ["Receipt", "Delivery", "Internal", "Adjustment"];
 const STATUSES = ["Draft", "Waiting", "Ready", "Done", "Canceled"];
@@ -29,6 +30,7 @@ function typeLabel(t) {
 }
 
 export default function OperationsPage() {
+  const { isManager } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeType = searchParams.get("type") || "";
   const activeStatus = searchParams.get("status") || "";
@@ -207,12 +209,12 @@ export default function OperationsPage() {
                     </td>
                     <td>
                       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        {op.status !== "Done" && op.status !== "Canceled" && (
+                        {isManager && op.status !== "Done" && op.status !== "Canceled" && (
                           <button className="btn btn-sm btn-primary" onClick={() => validate(op.id)}>
                             Validate
                           </button>
                         )}
-                        {op.status !== "Done" && op.status !== "Canceled" && (
+                        {isManager && op.status !== "Done" && op.status !== "Canceled" && (
                           <select
                             className="filter-select btn-sm"
                             style={{ minWidth: 100, padding: "4px 8px" }}

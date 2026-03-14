@@ -29,7 +29,14 @@ function App() {
         <Route path="/products" element={<ProductsPage />} />
         <Route path="/operations" element={<OperationsPage />} />
         <Route path="/ledger" element={<LedgerPage />} />
-        <Route path="/warehouses" element={<WarehousesPage />} />
+        <Route
+          path="/warehouses"
+          element={
+            <ProtectedRoute allowedRoles={["manager"]}>
+              <WarehousesPage />
+            </ProtectedRoute>
+          }
+        />
         <Route path="/profile" element={<ProfilePage />} />
       </Route>
 

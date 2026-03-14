@@ -413,6 +413,7 @@ textarea { resize: vertical; min-height: 72px; }
 .msg-error   { background: #fef2f2; border: 1px solid #fca5a5; border-radius: var(--r-sm); color: #b91c1c; padding: 8px 12px; font-size: .85rem; }
 .msg-warning { background: #fffbeb; border: 1px solid #fde68a; border-radius: var(--r-sm); color: #92400e; padding: 8px 12px; font-size: .85rem; font-weight: 600; text-align: center; }
 .msg-success { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: var(--r-sm); color: #166534; padding: 8px 12px; font-size: .85rem; }
+.msg-info    { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: var(--r-sm); color: #1d4ed8; padding: 8px 12px; font-size: .85rem; margin-bottom: 12px; }
 
 /* ─── Utilities ──────────────────────────────────────────────────────────── */
 .row   { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

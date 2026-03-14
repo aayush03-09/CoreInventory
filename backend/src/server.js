@@ -15,6 +15,7 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 const MAX_BODY_SIZE = "200kb";
 const AUTH_WINDOW_MS = 10 * 60 * 1000;
 const AUTH_MAX_ATTEMPTS = 30;
+const ROLES = ["manager", "staff"];
 const authAttempts = new Map();
 const sseClients = new Set();
 
@@ -111,6 +112,13 @@ const streamAuthMiddleware = (req, res, next) => {
   }
 };
 
+const requireRole = (...allowedRoles) => (req, res, next) => {
+  if (!req.user || !allowedRoles.includes(req.user.role)) {
+    return res.status(403).json({ message: "Forbidden: insufficient permissions" });
+  }
+  return next();
+};
+
 const getOrCreateStock = async (productId, locationId, client) => {
   await db.query(
     `INSERT INTO stock_balances(product_id, location_id, qty)
@@ -172,6 +180,7 @@ app.post("/api/auth/signup", authRateLimit, asyncHandler(async (req, res) => {
     name: z.string().trim().min(2).max(80),
     email: z.email().trim().toLowerCase(),
     password: z.string().min(8).max(128),
+    role: z.enum(ROLES).optional(),
   });
 
   const parsed = withSchema(schema, req.body);
@@ -180,6 +189,7 @@ app.post("/api/auth/signup", authRateLimit, asyncHandler(async (req, res) => {
   }
 
   const { name, email, password } = parsed.data;
+  const role = parsed.data.role || "staff";
   const existing = await db.getOne("SELECT id FROM users WHERE email = $1", [email]);
   if (existing) {
     return res.status(400).json({ message: "Email already exists" });
@@ -188,13 +198,13 @@ app.post("/api/auth/signup", authRateLimit, asyncHandler(async (req, res) => {
   const hash = bcrypt.hashSync(password, 10);
   const created = await db.getOne(
     `INSERT INTO users(name, email, password_hash, role)
-     VALUES ($1, $2, $3, 'manager')
+     VALUES ($1, $2, $3, $4)
      RETURNING id`,
-    [name, email, hash]
+    [name, email, hash, role]
   );
 
-  const token = jwt.sign({ id: created.id, name, email, role: "manager" }, JWT_SECRET, { expiresIn: "7d" });
-  return res.json({ token, user: { id: created.id, name, email, role: "manager" } });
+  const token = jwt.sign({ id: created.id, name, email, role }, JWT_SECRET, { expiresIn: "7d" });
+  return res.json({ token, user: { id: created.id, name, email, role } });
 }));
 
 app.post("/api/auth/login", authRateLimit, asyncHandler(async (req, res) => {
@@ -294,7 +304,7 @@ app.get("/api/warehouses", authMiddleware, asyncHandler(async (_req, res) => {
   res.json(rows);
 }));
 
-app.post("/api/warehouses", authMiddleware, asyncHandler(async (req, res) => {
+app.post("/api/warehouses", authMiddleware, requireRole("manager"), asyncHandler(async (req, res) => {
   const schema = z.object({ name: z.string().trim().min(2).max(120) });
   const parsed = withSchema(schema, req.body);
   if (!parsed.ok) {
@@ -335,7 +345,7 @@ app.get("/api/locations", authMiddleware, asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
-app.post("/api/locations", authMiddleware, asyncHandler(async (req, res) => {
+app.post("/api/locations", authMiddleware, requireRole("manager"), asyncHandler(async (req, res) => {
   const schema = z.object({ warehouseId: z.coerce.number().int().positive(), name: z.string().trim().min(2).max(120) });
   const parsed = withSchema(schema, req.body);
   if (!parsed.ok) {
@@ -363,7 +373,7 @@ app.get("/api/categories", authMiddleware, asyncHandler(async (_req, res) => {
   res.json(rows);
 }));
 
-app.post("/api/categories", authMiddleware, asyncHandler(async (req, res) => {
+app.post("/api/categories", authMiddleware, requireRole("manager"), asyncHandler(async (req, res) => {
   const schema = z.object({ name: z.string().trim().min(2).max(80) });
   const parsed = withSchema(schema, req.body);
   if (!parsed.ok) {
@@ -418,7 +428,7 @@ app.get("/api/products", authMiddleware, asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
-app.post("/api/products", authMiddleware, asyncHandler(async (req, res) => {
+app.post("/api/products", authMiddleware, requireRole("manager"), asyncHandler(async (req, res) => {
   const schema = z.object({
     name: z.string().trim().min(2).max(140),
     sku: z.string().trim().min(2).max(80),
@@ -475,7 +485,7 @@ app.post("/api/products", authMiddleware, asyncHandler(async (req, res) => {
   }
 }));
 
-app.put("/api/products/:id", authMiddleware, asyncHandler(async (req, res) => {
+app.put("/api/products/:id", authMiddleware, requireRole("manager"), asyncHandler(async (req, res) => {
   const schema = z.object({
     name: z.string().trim().min(2).max(140),
     sku: z.string().trim().min(2).max(80),
@@ -640,7 +650,7 @@ app.post("/api/operations", authMiddleware, asyncHandler(async (req, res) => {
   broadcast("operation.changed", { action: "created", id, type: operation.type, status: operation.status });
 }));
 
-app.post("/api/operations/:id/validate", authMiddleware, asyncHandler(async (req, res) => {
+app.post("/api/operations/:id/validate", authMiddleware, requireRole("manager"), asyncHandler(async (req, res) => {
   const operation = await db.getOne("SELECT * FROM operations WHERE id = $1", [req.params.id]);
   if (!operation) {
     return res.status(404).json({ message: "Operation not found" });
@@ -727,7 +737,7 @@ app.post("/api/operations/:id/validate", authMiddleware, asyncHandler(async (req
   }
 }));
 
-app.patch("/api/operations/:id/status", authMiddleware, asyncHandler(async (req, res) => {
+app.patch("/api/operations/:id/status", authMiddleware, requireRole("manager"), asyncHandler(async (req, res) => {
   const schema = z.object({ status: z.enum(["Draft", "Waiting", "Ready", "Done", "Canceled"]) });
   const parsed = withSchema(schema, req.body);
   if (!parsed.ok) {

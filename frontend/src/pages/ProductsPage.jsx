@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import api from "../api";
 import Drawer from "../components/Drawer";
+import { useAuth } from "../AuthContext";
 
 const initialForm = {
   name: "",
@@ -19,6 +20,7 @@ function stockBadge(total, reorder) {
 }
 
 export default function ProductsPage() {
+  const { isManager } = useAuth();
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [locations, setLocations] = useState([]);
@@ -82,11 +84,15 @@ export default function ProductsPage() {
           <p className="page-subtitle">Manage product catalogue, SKUs, and stock levels.</p>
         </div>
         <div className="page-actions">
-          <button className="btn btn-primary" onClick={openDrawer}>
-            + Add Product
-          </button>
+          {isManager && (
+            <button className="btn btn-primary" onClick={openDrawer}>
+              + Add Product
+            </button>
+          )}
         </div>
       </div>
+
+      {!isManager && <div className="msg-info">Warehouse staff has read-only access on product master data.</div>}
 
       <div className="filter-bar">
         <div className="search-box">

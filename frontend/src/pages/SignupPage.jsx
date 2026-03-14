@@ -4,7 +4,7 @@ import api from "../api";
 import { useAuth } from "../AuthContext";
 
 export default function SignupPage() {
-  const [form, setForm] = useState({ name: "", email: "", password: "" });
+  const [form, setForm] = useState({ name: "", email: "", password: "", role: "staff" });
   const [error, setError] = useState("");
   const navigate = useNavigate();
   const { login } = useAuth();
@@ -41,6 +41,13 @@ export default function SignupPage() {
         <div className="form-field">
           <label className="form-label">Password</label>
           <input type="password" placeholder="••••••••" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required />
+        </div>
+        <div className="form-field">
+          <label className="form-label">Access Role</label>
+          <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+            <option value="staff">Warehouse Staff</option>
+            <option value="manager">Inventory Manager</option>
+          </select>
         </div>
         <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center" }}>Create Account</button>
         <hr className="auth-divider" />
