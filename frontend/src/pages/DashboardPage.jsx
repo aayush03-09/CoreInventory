@@ -18,24 +18,144 @@ const MANAGER_PROFIT_KPIS = [
   { key: "totalProfit", label: "Total Realized Profit", icon: "PFT" },
 ];
 
+const PROFIT_DAYS = 7;
+
+const formatCurrency = (value) => Number(value || 0).toFixed(2);
+
+function buildProfitTrend(operations) {
+  const bucket = new Map();
+  for (let i = PROFIT_DAYS - 1; i >= 0; i -= 1) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    bucket.set(key, 0);
+  }
+
+  operations
+    .filter((op) => op.type === "Delivery" && ["Approved", "Done"].includes(op.status))
+    .forEach((op) => {
+      const key = (op.approved_at || op.updated_at || op.created_at || "").slice(0, 10);
+      if (!bucket.has(key)) return;
+      const opProfit = (op.items || []).reduce(
+        (sum, item) => sum + (Number(item.selling_price || 0) - Number(item.cost_price || 0)) * Number(item.quantity || 0),
+        0
+      );
+      bucket.set(key, bucket.get(key) + opProfit);
+    });
+
+  return [...bucket.entries()].map(([date, value]) => ({ label: date.slice(5), value: Number(value.toFixed(2)) }));
+}
+
+function buildTypeMix(operations) {
+  const map = new Map();
+  operations.forEach((op) => map.set(op.type, (map.get(op.type) || 0) + 1));
+  return ["Receipt", "Delivery", "Internal", "Adjustment"].map((type) => ({ label: type, value: map.get(type) || 0 }));
+}
+
+function SimpleBarChart({ title, rows, emptyText }) {
+  const max = Math.max(...rows.map((r) => r.value), 0);
+  return (
+    <div className="chart-card">
+      <div className="chart-title">{title}</div>
+      {max === 0 ? (
+        <div className="chart-empty">{emptyText}</div>
+      ) : (
+        <div className="bar-chart">
+          {rows.map((row) => {
+            const widthPct = max ? Math.max((row.value / max) * 100, 8) : 0;
+            return (
+              <div key={row.label} className="bar-row">
+                <div className="bar-label">{row.label}</div>
+                <div className="bar-track">
+                  <div className="bar-fill" style={{ width: `${widthPct}%` }} />
+                </div>
+                <div className="bar-value">{row.value}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProfitLineChart({ rows }) {
+  const max = Math.max(...rows.map((r) => r.value), 1);
+  const points = rows
+    .map((row, idx) => {
+      const x = (idx / Math.max(rows.length - 1, 1)) * 100;
+      const y = 100 - (row.value / max) * 100;
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <div className="chart-card">
+      <div className="chart-title">Profit Trend (Last 7 Days)</div>
+      <div className="line-chart-wrap">
+        <svg viewBox="0 0 100 100" className="line-chart" preserveAspectRatio="none">
+          <polyline points="0,100 100,100" className="line-axis" />
+          <polyline points={points} className="line-main" />
+        </svg>
+      </div>
+      <div className="line-labels">
+        {rows.map((r) => (
+          <div key={r.label} className="line-day">
+            <span>{r.label}</span>
+            <strong>{formatCurrency(r.value)}</strong>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const { isManager } = useAuth();
   const [dashboard, setDashboard] = useState(null);
   const [warehouses, setWarehouses] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [managerProfitTrend, setManagerProfitTrend] = useState([]);
+  const [operationTypeMix, setOperationTypeMix] = useState([]);
+  const [staffQueueBreakdown, setStaffQueueBreakdown] = useState([]);
   const [filters, setFilters] = useState({ type: "", status: "", warehouseId: "", categoryId: "" });
   const [liveConnected, setLiveConnected] = useState(false);
 
   const load = async (f = filters) => {
     const params = Object.fromEntries(Object.entries(f).filter(([, v]) => v !== ""));
-    const [{ data: d }, { data: ws }, { data: cs }] = await Promise.all([
+    const requests = [
       api.get("/dashboard", { params }),
       api.get("/warehouses"),
       api.get("/categories"),
-    ]);
+      api.get("/operations", { params: { limit: 150 } }),
+    ];
+
+    if (!isManager) {
+      requests.push(api.get("/operations/staff-queue"));
+    }
+
+    const [dashboardRes, warehouseRes, categoryRes, operationsRes, queueRes] = await Promise.all(requests);
+    const d = dashboardRes.data;
+    const ws = warehouseRes.data;
+    const cs = categoryRes.data;
+    const ops = operationsRes.data;
+
     setDashboard(d);
     setWarehouses(ws);
     setCategories(cs);
+    setOperationTypeMix(buildTypeMix(ops));
+
+    if (isManager) {
+      setManagerProfitTrend(buildProfitTrend(ops));
+      setStaffQueueBreakdown([]);
+    } else {
+      const queue = queueRes?.data || { pendingReceipts: [], pendingDeliveries: [] };
+      setStaffQueueBreakdown([
+        { label: "Pending Receipts", value: queue.pendingReceipts.length },
+        { label: "Pending Deliveries", value: queue.pendingDeliveries.length },
+      ]);
+      setManagerProfitTrend([]);
+    }
   };
 
   useEffect(() => {
@@ -106,6 +226,22 @@ export default function DashboardPage() {
             <div className="kpi-label">{k.label}</div>
           </div>
         ))}
+      </div>
+
+      <div className="chart-grid">
+        {isManager && managerProfitTrend.length > 0 && <ProfitLineChart rows={managerProfitTrend} />}
+        <SimpleBarChart
+          title="Operations Mix"
+          rows={operationTypeMix}
+          emptyText="No operations available for chart"
+        />
+        {!isManager && (
+          <SimpleBarChart
+            title="Staff Work Queue"
+            rows={staffQueueBreakdown}
+            emptyText="No pending queues"
+          />
+        )}
       </div>
 
       <div className="filter-bar">
